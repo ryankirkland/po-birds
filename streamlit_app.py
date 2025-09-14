@@ -138,6 +138,7 @@ def auth_ui():
         if curr and curr.session:
             st.session_state["session"] = curr.session
             st.session_state["user"] = curr.session.user
+            _attach_session_token()
     except Exception:
         pass
 
@@ -146,6 +147,7 @@ def auth_ui():
             st.success(f"Logged in: {st.session_state['user'].email}")
             if st.button("Sign out"):
                 supabase.auth.sign_out()
+                supabase.postgrest.auth(None)
                 st.session_state.pop("user", None)
                 st.session_state.pop("session", None)
                 st.rerun()
@@ -163,6 +165,7 @@ def auth_ui():
                 res = supabase.auth.sign_in_with_password({"email": email, "password": pw})
                 st.session_state["session"] = res.session
                 st.session_state["user"] = res.user
+                _attach_session_token() 
                 st.success(f"Signed in as {res.user.email}")
                 st.rerun()
             except Exception as e:
@@ -183,6 +186,17 @@ def auth_ui():
 
     return None, None
 
+def _attach_session_token():
+    """Attach the current session's JWT to PostgREST so RLS sees auth.uid()."""
+    try:
+        curr = supabase.auth.get_session()
+        if curr and curr.session and curr.session.access_token:
+            supabase.postgrest.auth(curr.session.access_token)
+        else:
+            # No session: clear token so calls won't pretend to be authed
+            supabase.postgrest.auth(None)
+    except Exception:
+        supabase.postgrest.auth(None)
 
 st.title("🕊️ Port Orchard Backyard Birds Tracker")
 st.caption("Photos © their respective sources. Source links go to Audubon / All About Birds pages.")
