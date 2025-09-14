@@ -147,7 +147,7 @@ def auth_ui():
             st.success(f"Logged in: {st.session_state['user'].email}")
             if st.button("Sign out"):
                 supabase.auth.sign_out()
-                supabase.postgrest.auth(None)
+                supabase.postgrest.auth(sb_key)
                 st.session_state.pop("user", None)
                 st.session_state.pop("session", None)
                 st.rerun()
@@ -190,13 +190,18 @@ def _attach_session_token():
     """Attach the current session's JWT to PostgREST so RLS sees auth.uid()."""
     try:
         curr = supabase.auth.get_session()
-        if curr and curr.session and curr.session.access_token:
-            supabase.postgrest.auth(curr.session.access_token)
+        token = curr.session.access_token if (curr and curr.session) else None
+        if token:
+            supabase.postgrest.auth(token)     # user JWT -> per-user RLS
         else:
-            # No session: clear token so calls won't pretend to be authed
-            supabase.postgrest.auth(None)
+            supabase.postgrest.auth(sb_key)    # fallback to anon key (NOT None)
     except Exception:
-        supabase.postgrest.auth(None)
+        # As a last resort, make sure we at least have anon key
+        try:
+            supabase.postgrest.auth(sb_key)
+        except Exception:
+            pass
+
 
 st.title("🕊️ Port Orchard Backyard Birds Tracker")
 st.caption("Photos © their respective sources. Source links go to Audubon / All About Birds pages.")
