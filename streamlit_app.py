@@ -243,6 +243,7 @@ df = merge_supabase_state(csv_df, sb_state_df)
 # Sidebar bulk helpers
 with st.sidebar:
     st.header("Bulk Actions")
+    st.sidebar.write("User ID:", user_id)
     mark_all_seen = st.button("Mark ALL as seen (today)")
     clear_all_seen = st.button("Clear ALL seen/notes/dates")
 
