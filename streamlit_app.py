@@ -134,15 +134,16 @@ def _attach_session_token():
         curr = supabase.auth.get_session()
         token = curr.session.access_token if (curr and curr.session) else None
         if token:
-            supabase.postgrest.auth(token)     # user JWT -> per-user RLS
+            supabase.postgrest.auth(token)   # user JWT -> per-user RLS
         else:
-            supabase.postgrest.auth(sb_key)    # fallback to anon key (NOT None)
+            # Fallback to anon key for read-only calls (won't pass insert policy)
+            supabase.postgrest.auth(sb_key)
     except Exception:
-        # As a last resort, make sure we at least have anon key
         try:
             supabase.postgrest.auth(sb_key)
         except Exception:
             pass
+
 
 def auth_ui():
     """Simple email/password auth. Returns (user, session) or (None, None)."""
@@ -201,6 +202,14 @@ def auth_ui():
                 st.error(f"Sign-up failed: {e}")
 
     return None, None
+
+try:
+    _attach_session_token()
+    who = supabase.rpc("whoami").execute()
+    st.sidebar.write("whoami (auth.uid):", who.data)
+    st.sidebar.write("user_id:", user_id)
+except Exception as e:
+    st.sidebar.warning(f"whoami RPC failed: {e}")
 
 
 st.title("🕊️ Port Orchard Backyard Birds Tracker")
