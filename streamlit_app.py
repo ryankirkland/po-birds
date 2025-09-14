@@ -244,7 +244,7 @@ with save_cols[1]:
                 supabase_upsert(record)
             st.success("Synced to Supabase table 'bird_sightings'")
             st.cache_data.clear()
-            st.experimental_rerun()
+            st.rerun()
     else:
         st.info("Supabase syncing is disabled. Add 'supabase.url' and 'supabase.anon_key' to .streamlit/secrets.toml to enable.")
 
