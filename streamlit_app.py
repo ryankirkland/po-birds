@@ -340,6 +340,7 @@ with save_cols[0]:
 with save_cols[1]:
     if SUPABASE_ENABLED:
         if st.button("⬆️ Save Sightings"):
+            _attach_session_token()
             for _, row in df.iterrows():
                 record = {
                     "user_id": user_id,  # NEW
