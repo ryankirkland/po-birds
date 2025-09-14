@@ -10,6 +10,70 @@ from io import BytesIO
 st.set_page_config(page_title="Port Orchard Backyard Birds", page_icon="🕊️", layout="wide")
 
 @st.cache_data(show_spinner=False)
+def load_state_from_supabase() -> pd.DataFrame:
+    """
+    Reads current per-species state from Supabase (table: bird_sightings)
+    and returns a DataFrame with columns: species, seen, first_seen_date, notes.
+    Returns an empty DF if Supabase isn't configured or empty.
+    """
+    if not SUPABASE_ENABLED:
+        return pd.DataFrame(columns=["species","seen","first_seen_date","notes"])
+    try:
+        resp = supabase.table("bird_sightings").select(
+            "species, seen, first_seen_date, notes"
+        ).execute()
+        rows = resp.data or []
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return pd.DataFrame(columns=["species","seen","first_seen_date","notes"])
+        # Normalize types/empties
+        if "seen" in df.columns:
+            df["seen"] = df["seen"].fillna(False).astype(bool)
+        for c in ["species", "first_seen_date", "notes"]:
+            if c in df.columns:
+                df[c] = df[c].fillna("")
+        return df
+    except Exception:
+        # Silent fallback if the table doesn't exist yet, etc.
+        return pd.DataFrame(columns=["species","seen","first_seen_date","notes"])
+
+
+def merge_supabase_state(csv_df: pd.DataFrame, state_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Overlay Supabase state (seen/date/notes) onto CSV species metadata.
+    CSV key: 'Species'; Supabase key: 'species'.
+    """
+    if state_df is None or state_df.empty:
+        return csv_df.copy()
+
+    state = state_df.rename(columns={
+        "species": "Species",
+        "first_seen_date": "Date first seen",
+        "notes": "Notes"
+    }).copy()
+
+    # Map boolean seen -> 'Yes' / ''
+    state["Seen?"] = state.get("seen", False).apply(lambda x: "Yes" if bool(x) else "")
+
+    # Keep only overlay columns
+    state = state[["Species", "Seen?", "Date first seen", "Notes"]]
+
+    base = csv_df.copy()
+    for col in ["Seen?", "Date first seen", "Notes"]:
+        if col not in base.columns:
+            base[col] = ""
+
+    merged = base.merge(state, on="Species", how="left", suffixes=("", "_sb"))
+    for col in ["Seen?", "Date first seen", "Notes"]:
+        sb_col = f"{col}_sb"
+        if sb_col in merged.columns:
+            # If Supabase value present/non-empty, use it; else keep CSV
+            merged[col] = merged[sb_col].where(merged[sb_col].notna() & (merged[sb_col] != ""), merged[col])
+            merged.drop(columns=[sb_col], inplace=True)
+    return merged.fillna("")
+
+
+@st.cache_data(show_spinner=False)
 def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     # Normalize columns
@@ -65,7 +129,10 @@ st.title("🕊️ Port Orchard Backyard Birds Tracker")
 st.caption("Photos © their respective sources. Source links go to Audubon / All About Birds pages.")
 
 data_path = st.text_input("CSV data path", value="birds_db.csv")
-df = load_data(data_path)
+csv_df = load_data(data_path)
+sb_state_df = load_state_from_supabase() if SUPABASE_ENABLED else pd.DataFrame()
+df = merge_supabase_state(csv_df, sb_state_df)
+
 
 # Sidebar bulk helpers
 with st.sidebar:
@@ -176,6 +243,8 @@ with save_cols[1]:
                 }
                 supabase_upsert(record)
             st.success("Synced to Supabase table 'bird_sightings'")
+            st.cache_data.clear()
+            st.experimental_rerun()
     else:
         st.info("Supabase syncing is disabled. Add 'supabase.url' and 'supabase.anon_key' to .streamlit/secrets.toml to enable.")
 
