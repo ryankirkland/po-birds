@@ -6,6 +6,13 @@ from bs4 import BeautifulSoup
 from datetime import date, datetime
 from io import BytesIO
 
+# Safe globals
+sb_url = None
+sb_key = None
+if "access_token" not in st.session_state:
+    st.session_state["access_token"] = None
+
+
 # ---- Config ----
 st.set_page_config(page_title="Port Orchard Backyard Birds", page_icon="🕊️", layout="wide")
 
@@ -102,6 +109,42 @@ def get_og_image(url: str) -> str | None:
         return None
     return None
 
+def _attach_session_token():
+    """
+    Attach a JWT to all Supabase sub-clients so RLS sees auth.uid().
+    Priority: session_state token -> current session token -> anon key.
+    """
+    token = st.session_state.get("access_token")
+
+    # Try pulling a fresh token from the auth client if we don't have one cached
+    if not token:
+        try:
+            curr = supabase.auth.get_session()
+            if curr and curr.session and curr.session.access_token:
+                token = curr.session.access_token
+                st.session_state["access_token"] = token
+        except Exception:
+            pass
+
+    try:
+        if token:
+            supabase.postgrest.auth(token)      # tables, rpc
+            supabase.functions.set_auth(token)  # edge functions (if used)
+            # (optional) if you use storage later:
+            # supabase.storage.set_auth(token)
+        else:
+            # Fall back to anon for read-only; writes will fail (correct)
+            supabase.postgrest.auth(sb_key)
+            supabase.functions.set_auth(sb_key)
+            # supabase.storage.set_auth(sb_key)
+    except Exception:
+        # Last resort: anon
+        try:
+            supabase.postgrest.auth(sb_key)
+            supabase.functions.set_auth(sb_key)
+        except Exception:
+            pass
+
 # Optional Supabase integration
 SUPABASE_ENABLED = False
 try:
@@ -128,23 +171,6 @@ def require_supabase():
         st.error("Supabase not configured. Add [supabase] url and anon_key in secrets.")
         st.stop()
 
-def _attach_session_token():
-    """Attach the current session's JWT to PostgREST so RLS sees auth.uid()."""
-    try:
-        curr = supabase.auth.get_session()
-        token = curr.session.access_token if (curr and curr.session) else None
-        if token:
-            supabase.postgrest.auth(token)   # user JWT -> per-user RLS
-        else:
-            # Fallback to anon key for read-only calls (won't pass insert policy)
-            supabase.postgrest.auth(sb_key)
-    except Exception:
-        try:
-            supabase.postgrest.auth(sb_key)
-        except Exception:
-            pass
-
-
 def auth_ui():
     """Simple email/password auth. Returns (user, session) or (None, None)."""
     require_supabase()
@@ -155,7 +181,9 @@ def auth_ui():
         if curr and curr.session:
             st.session_state["session"] = curr.session
             st.session_state["user"] = curr.session.user
+            st.session_state["access_token"] = curr.session.access_token  # <— cache token
             _attach_session_token()
+
     except Exception:
         pass
 
@@ -164,7 +192,12 @@ def auth_ui():
             st.success(f"Logged in: {st.session_state['user'].email}")
             if st.button("Sign out"):
                 supabase.auth.sign_out()
-                supabase.postgrest.auth(sb_key)
+                st.session_state["access_token"] = None
+                try:
+                    supabase.postgrest.auth(sb_key)
+                    supabase.functions.set_auth(sb_key)
+                except Exception:
+                    pass
                 st.session_state.pop("user", None)
                 st.session_state.pop("session", None)
                 st.rerun()
@@ -182,7 +215,8 @@ def auth_ui():
                 res = supabase.auth.sign_in_with_password({"email": email, "password": pw})
                 st.session_state["session"] = res.session
                 st.session_state["user"] = res.user
-                _attach_session_token() 
+                st.session_state["access_token"] = res.session.access_token  # <— persist token
+                _attach_session_token()
                 st.success(f"Signed in as {res.user.email}")
                 st.rerun()
             except Exception as e:
@@ -215,6 +249,9 @@ if SUPABASE_ENABLED:
         st.info("Sign in (or create an account) to track your sightings.")
         st.stop()
     user_id = user.id
+
+# after you derive user_id (logged in)
+_attach_session_token()
 
 data_path = st.text_input("CSV data path", value="birds_db.csv")
 csv_df = load_data(data_path)
@@ -264,12 +301,12 @@ if clear_all_seen:
     df["Notes"] = ""
 
 try:
-    _attach_session_token()
     who = supabase.rpc("whoami").execute()
-    st.sidebar.write("whoami (auth.uid):", who.data)
-    st.sidebar.write("user_id:", user_id)
+    st.sidebar.write("auth.uid():", who.data)
+    st.sidebar.write("user_id (client):", user_id)
 except Exception as e:
-    st.sidebar.warning(f"whoami RPC failed: {e}")
+    st.sidebar.warning(f"whoami debug failed: {type(e).__name__}: {e}")
+
 
 # Display birds
 for i, row in df.iterrows():
