@@ -10,31 +10,28 @@ from io import BytesIO
 st.set_page_config(page_title="Port Orchard Backyard Birds", page_icon="🕊️", layout="wide")
 
 @st.cache_data(show_spinner=False)
-def load_state_from_supabase() -> pd.DataFrame:
+def load_state_from_supabase(user_id: str) -> pd.DataFrame:
     """
-    Reads current per-species state from Supabase (table: bird_sightings)
-    and returns a DataFrame with columns: species, seen, first_seen_date, notes.
-    Returns an empty DF if Supabase isn't configured or empty.
+    Reads current per-species state for the given user_id
+    from table public.bird_sightings.
     """
-    if not SUPABASE_ENABLED:
+    if not SUPABASE_ENABLED or not user_id:
         return pd.DataFrame(columns=["species","seen","first_seen_date","notes"])
     try:
         resp = supabase.table("bird_sightings").select(
             "species, seen, first_seen_date, notes"
-        ).execute()
+        ).eq("user_id", user_id).execute()
         rows = resp.data or []
         df = pd.DataFrame(rows)
         if df.empty:
             return pd.DataFrame(columns=["species","seen","first_seen_date","notes"])
-        # Normalize types/empties
-        if "seen" in df.columns:
-            df["seen"] = df["seen"].fillna(False).astype(bool)
-        for c in ["species", "first_seen_date", "notes"]:
+        # Normalize
+        df["seen"] = df.get("seen", False).fillna(False).astype(bool)
+        for c in ["species","first_seen_date","notes"]:
             if c in df.columns:
                 df[c] = df[c].fillna("")
         return df
     except Exception:
-        # Silent fallback if the table doesn't exist yet, etc.
         return pd.DataFrame(columns=["species","seen","first_seen_date","notes"])
 
 
@@ -125,13 +122,108 @@ def supabase_upsert(record: dict):
     except Exception as e:
         st.warning(f"Supabase upsert failed: {e}")
 
+
+def require_supabase():
+    if not SUPABASE_ENABLED:
+        st.error("Supabase not configured. Add [supabase] url and anon_key in secrets.")
+        st.stop()
+
+def auth_ui():
+    """Simple email/password auth. Returns (user, session) or (None, None)."""
+    require_supabase()
+
+    # Existing session?
+    try:
+        curr = supabase.auth.get_session()
+        if curr and curr.session:
+            st.session_state["session"] = curr.session
+            st.session_state["user"] = curr.session.user
+    except Exception:
+        pass
+
+    if "user" in st.session_state and st.session_state["user"]:
+        with st.sidebar:
+            st.success(f"Logged in: {st.session_state['user'].email}")
+            if st.button("Sign out"):
+                supabase.auth.sign_out()
+                st.session_state.pop("user", None)
+                st.session_state.pop("session", None)
+                st.rerun()
+        return st.session_state["user"], st.session_state["session"]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Sign In")
+        with st.form("signin_form", clear_on_submit=False):
+            email = st.text_input("Email", key="signin_email")
+            pw = st.text_input("Password", type="password", key="signin_pw")
+            submit = st.form_submit_button("Sign In")
+        if submit:
+            try:
+                res = supabase.auth.sign_in_with_password({"email": email, "password": pw})
+                st.session_state["session"] = res.session
+                st.session_state["user"] = res.user
+                st.success(f"Signed in as {res.user.email}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Sign-in failed: {e}")
+
+    with col2:
+        st.subheader("Sign Up")
+        with st.form("signup_form", clear_on_submit=False):
+            email2 = st.text_input("Email ", key="signup_email")
+            pw2 = st.text_input("Password ", type="password", key="signup_pw")
+            submit2 = st.form_submit_button("Create Account")
+        if submit2:
+            try:
+                supabase.auth.sign_up({"email": email2, "password": pw2})
+                st.success("Check your email to confirm, then sign in.")
+            except Exception as e:
+                st.error(f"Sign-up failed: {e}")
+
+    return None, None
+
+
 st.title("🕊️ Port Orchard Backyard Birds Tracker")
 st.caption("Photos © their respective sources. Source links go to Audubon / All About Birds pages.")
 
+user = None
+user_id = None
+if SUPABASE_ENABLED:
+    user, _ = auth_ui()
+    if not user:
+        st.info("Sign in (or create an account) to track your sightings.")
+        st.stop()
+    user_id = user.id
+
 data_path = st.text_input("CSV data path", value="birds_db.csv")
 csv_df = load_data(data_path)
-sb_state_df = load_state_from_supabase() if SUPABASE_ENABLED else pd.DataFrame()
+sb_state_df = load_state_from_supabase(user_id) if SUPABASE_ENABLED else pd.DataFrame()
+
+def merge_supabase_state(csv_df: pd.DataFrame, state_df: pd.DataFrame) -> pd.DataFrame:
+    if state_df is None or state_df.empty:
+        return csv_df.copy()
+    state = state_df.rename(columns={
+        "species": "Species",
+        "first_seen_date": "Date first seen",
+        "notes": "Notes"
+    }).copy()
+    state["Seen?"] = state.get("seen", False).apply(lambda x: "Yes" if bool(x) else "")
+    state = state[["Species","Seen?","Date first seen","Notes"]]
+    base = csv_df.copy()
+    for col in ["Seen?", "Date first seen", "Notes"]:
+        if col not in base.columns:
+            base[col] = ""
+    merged = base.merge(state, on="Species", how="left", suffixes=("", "_sb"))
+    for col in ["Seen?", "Date first seen", "Notes"]:
+        sb_col = f"{col}_sb"
+        if sb_col in merged.columns:
+            merged[col] = merged[sb_col].where(merged[sb_col].notna() & (merged[sb_col] != ""), merged[col])
+            merged.drop(columns=[sb_col], inplace=True)
+    return merged.fillna("")
+
 df = merge_supabase_state(csv_df, sb_state_df)
+
 
 
 # Sidebar bulk helpers
@@ -235,18 +327,25 @@ with save_cols[1]:
         if st.button("⬆️ Save Sightings"):
             for _, row in df.iterrows():
                 record = {
+                    "user_id": user_id,  # NEW
                     "species": row.get("Species", ""),
                     "seen": True if str(row.get("Seen?", "")).strip().lower() == "yes" else False,
                     "first_seen_date": row.get("Date first seen", None) or None,
-                    "notes": row.get("Notes", ""),
+                    "notes": row.get("Notes", "") or "",
                     "updated_at": datetime.utcnow().isoformat() + "Z",
                 }
-                supabase_upsert(record)
-            st.success("Synced to Supabase table 'bird_sightings'")
+                try:
+                    # NEW: conflict on (user_id, species)
+                    supabase.table("bird_sightings").upsert(
+                        record, on_conflict="user_id,species"
+                    ).execute()
+                except Exception as e:
+                    st.warning(f"Supabase upsert failed: {e}")
+            st.success("Synced to Supabase (per user).")
             st.cache_data.clear()
             st.rerun()
     else:
-        st.info("Supabase syncing is disabled. Add 'supabase.url' and 'supabase.anon_key' to .streamlit/secrets.toml to enable.")
+        st.info("Supabase syncing is disabled. Add 'supabase.url' and 'supabase.anon_key' to secrets to enable.")
 
 # Export button (always available)
 csv_bytes = df.to_csv(index=False).encode("utf-8")
