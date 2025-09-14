@@ -203,14 +203,6 @@ def auth_ui():
 
     return None, None
 
-try:
-    _attach_session_token()
-    who = supabase.rpc("whoami").execute()
-    st.sidebar.write("whoami (auth.uid):", who.data)
-    st.sidebar.write("user_id:", user_id)
-except Exception as e:
-    st.sidebar.warning(f"whoami RPC failed: {e}")
-
 
 st.title("🕊️ Port Orchard Backyard Birds Tracker")
 st.caption("Photos © their respective sources. Source links go to Audubon / All About Birds pages.")
@@ -270,6 +262,14 @@ if clear_all_seen:
     df["Seen?"] = ""
     df["Date first seen"] = ""
     df["Notes"] = ""
+
+try:
+    _attach_session_token()
+    who = supabase.rpc("whoami").execute()
+    st.sidebar.write("whoami (auth.uid):", who.data)
+    st.sidebar.write("user_id:", user_id)
+except Exception as e:
+    st.sidebar.warning(f"whoami RPC failed: {e}")
 
 # Display birds
 for i, row in df.iterrows():
