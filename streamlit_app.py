@@ -128,6 +128,22 @@ def require_supabase():
         st.error("Supabase not configured. Add [supabase] url and anon_key in secrets.")
         st.stop()
 
+def _attach_session_token():
+    """Attach the current session's JWT to PostgREST so RLS sees auth.uid()."""
+    try:
+        curr = supabase.auth.get_session()
+        token = curr.session.access_token if (curr and curr.session) else None
+        if token:
+            supabase.postgrest.auth(token)     # user JWT -> per-user RLS
+        else:
+            supabase.postgrest.auth(sb_key)    # fallback to anon key (NOT None)
+    except Exception:
+        # As a last resort, make sure we at least have anon key
+        try:
+            supabase.postgrest.auth(sb_key)
+        except Exception:
+            pass
+
 def auth_ui():
     """Simple email/password auth. Returns (user, session) or (None, None)."""
     require_supabase()
@@ -185,22 +201,6 @@ def auth_ui():
                 st.error(f"Sign-up failed: {e}")
 
     return None, None
-
-def _attach_session_token():
-    """Attach the current session's JWT to PostgREST so RLS sees auth.uid()."""
-    try:
-        curr = supabase.auth.get_session()
-        token = curr.session.access_token if (curr and curr.session) else None
-        if token:
-            supabase.postgrest.auth(token)     # user JWT -> per-user RLS
-        else:
-            supabase.postgrest.auth(sb_key)    # fallback to anon key (NOT None)
-    except Exception:
-        # As a last resort, make sure we at least have anon key
-        try:
-            supabase.postgrest.auth(sb_key)
-        except Exception:
-            pass
 
 
 st.title("🕊️ Port Orchard Backyard Birds Tracker")
