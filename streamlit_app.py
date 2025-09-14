@@ -165,7 +165,7 @@ with save_cols[0]:
 
 with save_cols[1]:
     if SUPABASE_ENABLED:
-        if st.button("⬆️ Sync to Supabase"):
+        if st.button("⬆️ Save Sightings"):
             for _, row in df.iterrows():
                 record = {
                     "species": row.get("Species", ""),
